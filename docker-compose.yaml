@@ -1,0 +1,220 @@
+version: '3.9'
+name: npkm
+
+x-kafka-env: &kafka-env
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  ALLOW_PLAINTEXT_LISTENER: "yes"
+  KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://ms-schema-registry-1:8081,http://ms-schema-registry-2:8082,http://ms-schema-registry-3:8083
+  KAFKA_ZOOKEEPER_CONNECT: ms-zookeeper-1:2181,ms-zookeeper-2:2182,ms-zookeeper-3:2183
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+x-zookeeper-env: &zookeeper-env
+  ZOOKEEPER_CLIENT_PORT: 2181
+  ZOOKEEPER_TICK_TIME: 2000
+  ZOOKEEPER_SERVERS: ms-zookeeper-1:2888:3888;ms-zookeeper-2:2888:3888;ms-zookeeper-3:2888:3888
+
+x-schema-registry-env: &schema-registry-env
+  SCHEMA_REGISTRY_KAFKASTORE_GROUP_ID: ms-schema-registry
+  SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: ms-kafka-1:9092
+  SCHEMA_REGISTRY_LEADER_ELIGIBILITY: "true"
+  SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
+
+services:
+  # -------------------- Zookeeper -------------------- #
+  zookeeper-1:
+    container_name: ms-zookeeper-1
+    image: "confluentinc/cp-zookeeper:${CONFLUENT_KAFKA_TAG}"
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 1
+      
+  zookeeper-2:
+    container_name: ms-zookeeper-2
+    image: "confluentinc/cp-zookeeper:${CONFLUENT_KAFKA_TAG}"
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 2
+
+  zookeeper-3:
+    container_name: ms-zookeeper-3
+    image: "confluentinc/cp-zookeeper:${CONFLUENT_KAFKA_TAG}"
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 3
+
+  # -------------------- Kafka brokers -------------------- #
+  kafka-1:
+    container_name: ms-kafka-1
+    image: "confluentinc/cp-kafka:${CONFLUENT_KAFKA_TAG}"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://ms-kafka-1:9092
+
+  kafka-2:
+    container_name: ms-kafka-2
+    image: "confluentinc/cp-kafka:${CONFLUENT_KAFKA_TAG}"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://ms-kafka-2:9093
+
+  kafka-3:
+    container_name: ms-kafka-3
+    image: "confluentinc/cp-kafka:${CONFLUENT_KAFKA_TAG}"
+    depends_on:
+      - zookeeper-1
+      - zookeeper-2
+      - zookeeper-3
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://ms-kafka-3:9094
+
+  # -------------------- Schema Registry -------------------- #
+  schema-registry-balancer:
+    container_name: ms-schema-registry-balancer
+    build:
+      context: './schema-registry-balancer'
+    expose:
+      - 8088
+
+  schema-registry-1:
+    image: "confluentinc/cp-schema-registry:${CONFLUENT_KAFKA_TAG}"
+    container_name: ms-schema-registry-1
+    restart: on-failure:3
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    environment:
+      <<: *schema-registry-env
+      SCHEMA_REGISTRY_HOST_NAME: ms-schema-registry-1
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  schema-registry-2:
+    image: "confluentinc/cp-schema-registry:${CONFLUENT_KAFKA_TAG}"
+    container_name: ms-schema-registry-2
+    restart: on-failure:3
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    environment:
+      <<: *schema-registry-env
+      SCHEMA_REGISTRY_HOST_NAME: ms-schema-registry-2
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8082
+
+  schema-registry-3:
+    image: "confluentinc/cp-schema-registry:${CONFLUENT_KAFKA_TAG}"
+    container_name: ms-schema-registry-3
+    restart: on-failure:3
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    environment:
+      <<: *schema-registry-env
+      SCHEMA_REGISTRY_HOST_NAME: ms-schema-registry-3
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8083
+
+  # -------------------- Kafka Admin UI -------------------- #
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ms-kafka-admin-ui
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    ports:
+      - 8080:8080
+    environment:
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: admin
+      SPRING_SECURITY_USER_PASSWORD: password
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_ZOOKEEPER: ms-zookeeper-1:2181
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: ms-kafka-1:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://ms-schema-registry-balancer:8088
+
+  # -------------------- Microservices -------------------- #
+  price-estimate-1:
+    container_name: ms-price-estimate-1
+    depends_on:
+      - schema-registry-1
+      - schema-registry-2
+      - schema-registry-3
+    build:
+      context: ./price-estimate-python
+
+  price-estimate-2:
+    container_name: ms-price-estimate-2
+    depends_on:
+      - schema-registry-1
+      - schema-registry-2
+      - schema-registry-3
+    build:
+      context: ./price-estimate-python
+
+  vehicles-stock:
+    container_name: ms-vehicles-stock
+    depends_on:
+      - schema-registry-1
+      - schema-registry-2
+      - schema-registry-3
+      - vehicles-stock-db
+    build:
+      context: ./vehicles-stock-nestjs
+    ports:
+      - 3002:3002
+
+  vehicles-ads:
+    container_name: ms-vehicles-ads
+    depends_on:
+      - schema-registry-1
+      - schema-registry-2
+      - schema-registry-3
+      - vehicles-ads-db
+    build:
+      context: ./vehicles-ads-nestjs
+    ports:
+      - 3003:3003
+
+  # -------------------- Databases -------------------- #
+  vehicles-stock-db:
+    image: "postgres:${POSTGRES_TAG}"
+    container_name: ms-vehicles-stock-db
+    expose:
+      - 5432
+    volumes:
+      - ms-postgres:/var/lib/postgresql/data
+      - ./sql/vehicles-stock-init.sql:/docker-entrypoint-initdb.d/vehicles-stock-init.sql
+    environment:
+      POSTGRES_USER: ${VEHICLES_STOCK_DB_USR}
+      POSTGRES_PASSWORD: ${VEHICLES_STOCK_DB_PWD}
+
+  vehicles-ads-db:
+    image: "mongo:${MONGO_TAG}"
+    container_name: ms-vehicles-ads-db
+    expose:
+      - 27017
+    volumes:
+      - ms-mongo:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${VEHICLES_ADS_DB_USR}
+      MONGO_INITDB_ROOT_PASSWORD: ${VEHICLES_ADS_DB_PWD}
+      MONGO_INITDB_DATABASE: vehicles
+
+volumes:
+  ms-postgres:
+  ms-mongo:
